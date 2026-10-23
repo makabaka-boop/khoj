@@ -16,10 +16,15 @@ import {
 import {
     ArrowLeft,
     ArrowRight,
+    ArrowsClockwise,
+    CaretDown,
+    CaretUp,
     FileDashed,
+    Files,
     GithubLogo,
     Lightbulb,
     LinkSimple,
+    ListBullets,
     MagnifyingGlass,
     NoteBlank,
     NotionLogo,
@@ -32,6 +37,7 @@ import {
     Check,
     BoxArrowDown,
     Funnel,
+    WarningCircle,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -84,6 +90,7 @@ interface AdditionalData {
     source: string;
     compiled: string;
     heading: string;
+    uri?: string;
 }
 
 interface SearchResult {
@@ -92,6 +99,27 @@ interface SearchResult {
     entry: string;
     score: number;
     "corpus-id": string;
+}
+
+interface DocumentSearchResult {
+    best: SearchResult;
+}
+
+type SearchViewMode = "documents" | "snippets";
+
+interface ExpandedDocumentState {
+    status: "loading" | "error" | "loaded";
+    paragraphs: SearchResult[];
+}
+
+function getDocumentKey(additional: AdditionalData): string {
+    // Same-named files from different sources or paths are distinct documents
+    return `${additional.source || ""}::${additional.file || ""}`;
+}
+
+function getDisplayFileName(additional: AdditionalData): string {
+    const isFileNameURL = (additional.file || "").startsWith("http");
+    return isFileNameURL ? additional.heading : additional.file.split("/").pop() || additional.file;
 }
 
 interface FileObject {
@@ -293,6 +321,167 @@ function focusNote(note: SearchResult) {
             )}
             <CardContent>
                 <div className="text-m">{note.entry}</div>
+            </CardContent>
+        </Card>
+    );
+}
+
+interface DocumentCardProps {
+    document: DocumentSearchResult;
+    expandedState?: ExpandedDocumentState;
+    onToggleExpand: () => void;
+    onRetry: () => void;
+}
+
+function DocumentCard({ document, expandedState, onToggleExpand, onRetry }: DocumentCardProps) {
+    const best = document.best;
+    const additional = best.additional;
+    const isFileNameURL = (additional.file || "").startsWith("http");
+    const displayName = getDisplayFileName(additional);
+    // Per-paragraph links take precedence; fall back to the document URL
+    const documentLink = additional.uri || (isFileNameURL ? additional.file : null);
+    const isExpanded = expandedState !== undefined;
+
+    return (
+        <Card className="bg-secondary h-full shadow-sm rounded-lg border border-muted mb-4 animate-fade-in-up">
+            <CardHeader>
+                <CardTitle className="flex items-start gap-2" title={additional.file}>
+                    {getNoteTypeIcon(additional.source)}
+                    <div className="min-w-0 flex-1">
+                        <div className="truncate">{displayName}</div>
+                        {!isFileNameURL && additional.file && additional.file !== displayName && (
+                            <div className="text-xs font-normal text-muted-foreground truncate">
+                                {additional.file}
+                            </div>
+                        )}
+                    </div>
+                </CardTitle>
+            </CardHeader>
+            <CardContent>
+                {!isExpanded && (
+                    <div className="line-clamp-4 text-muted-foreground whitespace-pre-wrap break-words">
+                        {best.entry}
+                    </div>
+                )}
+                {documentLink && !isExpanded && (
+                    <a
+                        href={documentLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 block underline text-sm bg-muted p-1 rounded-lg text-muted-foreground break-all"
+                    >
+                        <LinkSimple className="inline m-2" />
+                        {documentLink}
+                    </a>
+                )}
+                <Button
+                    onClick={onToggleExpand}
+                    variant={"ghost"}
+                    className="p-0 mt-2 text-orange-400 hover:bg-inherit"
+                >
+                    {isExpanded ? (
+                        <>
+                            Hide matching sections
+                            <CaretUp className="inline ml-2" />
+                        </>
+                    ) : (
+                        <>
+                            Show matching sections
+                            <CaretDown className="inline ml-2" />
+                        </>
+                    )}
+                </Button>
+                {isExpanded && (
+                    <div className="mt-3 pt-3 border-t flex flex-col gap-3">
+                        {expandedState.status === "loading" && (
+                            <InlineLoading message={"Loading sections"} iconClassName="h-4 w-4" />
+                        )}
+                        {expandedState.status === "error" && (
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <span className="text-sm text-red-500 inline-flex items-center gap-1">
+                                    <WarningCircle className="h-4 w-4" />
+                                    Failed to load matching sections.
+                                </span>
+                                <Button variant={"outline"} size="sm" onClick={onRetry}>
+                                    <ArrowsClockwise className="h-4 w-4 mr-1" />
+                                    Retry
+                                </Button>
+                            </div>
+                        )}
+                        {expandedState.status === "loaded" &&
+                            expandedState.paragraphs.length === 0 && (
+                                <div className="text-sm text-muted-foreground">
+                                    No additional matching sections found in this document.
+                                </div>
+                            )}
+                        {expandedState.status === "loaded" &&
+                            expandedState.paragraphs.map((paragraph) => {
+                                const paragraphLink = paragraph.additional.uri;
+                                return (
+                                    <div
+                                        key={paragraph["corpus-id"]}
+                                        className="rounded-lg bg-background p-2 border border-muted"
+                                    >
+                                        {paragraph.additional.heading && (
+                                            <div className="text-sm font-medium mb-1 break-words">
+                                                {paragraph.additional.heading}
+                                            </div>
+                                        )}
+                                        <div className="text-sm text-muted-foreground whitespace-pre-wrap break-words">
+                                            {paragraph.entry}
+                                        </div>
+                                        {paragraphLink && (
+                                            <a
+                                                href={paragraphLink}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="mt-1 inline-block underline text-xs bg-muted p-1 rounded-lg text-muted-foreground break-all"
+                                            >
+                                                <LinkSimple className="inline m-1" />
+                                                {paragraphLink}
+                                            </a>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                    </div>
+                )}
+            </CardContent>
+        </Card>
+    );
+}
+
+function EmptySearchResults({ query }: { query: string }) {
+    return (
+        <Card className="mt-4 flex flex-col items-center justify-center border-none shadow-none">
+            <CardHeader className="flex flex-col items-center justify-center">
+                <CardDescription className="border-muted-foreground border w-fit rounded-lg mb-2 text-center text-lg p-4">
+                    <MagnifyingGlass weight="fill" className="text-muted-foreground h-10 w-10" />
+                </CardDescription>
+                <CardTitle className="text-center">No results found</CardTitle>
+            </CardHeader>
+            <CardContent>
+                <div className="text-muted-foreground items-center justify-center text-center flex">
+                    No documents matched &quot;{query}&quot;. Try different keywords or clear your
+                    filters.
+                </div>
+            </CardContent>
+        </Card>
+    );
+}
+
+function SearchErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+    return (
+        <Card className="mt-4 border-red-300">
+            <CardContent className="flex items-center justify-between gap-3 flex-wrap pt-6">
+                <span className="text-sm text-red-500 inline-flex items-center gap-2">
+                    <WarningCircle className="h-5 w-5" />
+                    {message}
+                </span>
+                <Button variant={"outline"} size="sm" onClick={onRetry}>
+                    <ArrowsClockwise className="h-4 w-4 mr-1" />
+                    Retry
+                </Button>
             </CardContent>
         </Card>
     );
@@ -565,8 +754,18 @@ function FileFilterComboBox(props: FileFilterComboBoxProps) {
 
 export default function Search() {
     const [searchQuery, setSearchQuery] = useState("");
+    const [searchView, setSearchView] = useState<SearchViewMode>("documents");
+    // Snippet (paragraph) view state
     const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
     const [searchResultsLoading, setSearchResultsLoading] = useState(false);
+    const [searchError, setSearchError] = useState<string | null>(null);
+    // Document view state
+    const [documentResults, setDocumentResults] = useState<DocumentSearchResult[] | null>(null);
+    const [documentResultsLoading, setDocumentResultsLoading] = useState(false);
+    const [documentSearchError, setDocumentSearchError] = useState<string | null>(null);
+    const [expandedDocuments, setExpandedDocuments] = useState<
+        Record<string, ExpandedDocumentState>
+    >({});
     const searchInputRef = useRef<HTMLInputElement>(null);
     const [focusSearchResult, setFocusSearchResult] = useState<SearchResult | null>(null);
     const [files, setFiles] = useState<FileObject[]>([]);
@@ -585,6 +784,15 @@ export default function Search() {
     const { toast } = useToast();
 
     const isMobileWidth = useIsMobileWidth();
+
+    function resetSearchResults() {
+        setSearchResults(null);
+        setSearchError(null);
+        setDocumentResults(null);
+        setDocumentSearchError(null);
+        setExpandedDocuments({});
+        setFocusSearchResult(null);
+    }
 
     useEffect(() => {
         // Load all files once on page load
@@ -624,7 +832,7 @@ export default function Search() {
         setSearchQuery(value);
 
         if (!value.trim()) {
-            setSearchResults(null);
+            resetSearchResults();
             return;
         }
 
@@ -650,29 +858,151 @@ export default function Search() {
         const newQuery = `file:"${suggestion}" ${searchQueryWithoutFileFilter}`;
         setSearchQuery(newQuery);
         searchInputRef.current?.focus();
-        search();
+        search(newQuery);
     }
 
-    function search() {
-        if (searchResultsLoading || !searchQuery.trim()) return;
+    function handleSwitchView(mode: SearchViewMode) {
+        if (mode === searchView) return;
+        setSearchView(mode);
+        setFocusSearchResult(null);
+        // Run the search in the selected view if a query is already present
+        if (searchQuery.trim()) {
+            if (mode === "documents") {
+                searchDocuments(searchQuery);
+            } else {
+                searchSnippets(searchQuery);
+            }
+        }
+    }
+
+    function search(queryOverride?: string) {
+        const query = queryOverride ?? searchQuery;
+        if (searchView === "documents") {
+            searchDocuments(query);
+        } else {
+            searchSnippets(query);
+        }
+    }
+
+    function searchSnippets(queryOverride?: string) {
+        const query = (queryOverride ?? searchQuery).trim();
+        if (searchResultsLoading || !query) return;
 
         setSearchResultsLoading(true);
+        setSearchError(null);
 
-        const apiUrl = `/api/search?q=${encodeURIComponent(searchQuery)}&client=web`;
+        const apiUrl = `/api/search?q=${encodeURIComponent(query)}&client=web`;
         fetch(apiUrl, {
             method: "GET",
             headers: {
                 "Content-Type": "application/json",
             },
         })
-            .then((response) => response.json())
-            .then((data) => {
-                setSearchResults(data);
-                setSearchResultsLoading(false);
+            .then(async (response) => {
+                if (!response.ok) {
+                    throw new Error(`Search failed with status ${response.status}`);
+                }
+                const data = await response.json();
+                setSearchResults(Array.isArray(data) ? data : []);
             })
             .catch((error) => {
                 console.error("Error:", error);
+                setSearchError("Failed to load search results. Please try again.");
+            })
+            .finally(() => {
+                setSearchResultsLoading(false);
             });
+    }
+
+    function searchDocuments(queryOverride?: string) {
+        const query = (queryOverride ?? searchQuery).trim();
+        if (documentResultsLoading || !query) return;
+
+        setDocumentResultsLoading(true);
+        setDocumentSearchError(null);
+        setExpandedDocuments({});
+
+        const apiUrl = `/api/search/documents?q=${encodeURIComponent(query)}&client=web&n=5`;
+        fetch(apiUrl, {
+            method: "GET",
+            headers: {
+                "Content-Type": "application/json",
+            },
+        })
+            .then(async (response) => {
+                if (!response.ok) {
+                    throw new Error(`Document search failed with status ${response.status}`);
+                }
+                const data = await response.json();
+                setDocumentResults(Array.isArray(data) ? data : []);
+            })
+            .catch((error) => {
+                console.error("Error:", error);
+                setDocumentSearchError("Failed to load documents. Please try again.");
+            })
+            .finally(() => {
+                setDocumentResultsLoading(false);
+            });
+    }
+
+    function fetchDocumentParagraphs(additional: AdditionalData) {
+        const key = getDocumentKey(additional);
+        const query = searchQuery.trim();
+        if (!query) return;
+
+        setExpandedDocuments((previous) => ({
+            ...previous,
+            [key]: { status: "loading", paragraphs: [] },
+        }));
+
+        const params = new URLSearchParams({
+            q: query,
+            file: additional.file,
+            source: additional.source,
+            client: "web",
+            n: "5",
+        });
+
+        fetch(`/api/search/document?${params.toString()}`, {
+            method: "GET",
+            headers: {
+                "Content-Type": "application/json",
+            },
+        })
+            .then(async (response) => {
+                if (!response.ok) {
+                    throw new Error(`Document sections failed with status ${response.status}`);
+                }
+                const data = await response.json();
+                setExpandedDocuments((previous) => ({
+                    ...previous,
+                    [key]: {
+                        status: "loaded",
+                        paragraphs: Array.isArray(data) ? data : [],
+                    },
+                }));
+            })
+            .catch((error) => {
+                console.error("Error:", error);
+                setExpandedDocuments((previous) => ({
+                    ...previous,
+                    [key]: { status: "error", paragraphs: [] },
+                }));
+            });
+    }
+
+    function toggleDocument(additional: AdditionalData) {
+        const key = getDocumentKey(additional);
+        if (expandedDocuments[key] !== undefined) {
+            // Collapse the document
+            setExpandedDocuments((previous) => {
+                const updated = { ...previous };
+                delete updated[key];
+                return updated;
+            });
+        } else {
+            fetchDocumentParagraphs(additional);
+        }
     }
 
     const fetchFiles = async (currentPageNumber: number) => {
@@ -826,10 +1156,99 @@ export default function Search() {
                                         </Button>
                                     </div>
                                 </div>
-                                {searchResults === null && (
+                                <div className="mt-2 flex items-center gap-2">
+                                    <span className="text-xs text-muted-foreground">View</span>
+                                    <Button
+                                        variant={searchView === "documents" ? "default" : "outline"}
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() => handleSwitchView("documents")}
+                                        aria-pressed={searchView === "documents"}
+                                    >
+                                        <Files className="h-4 w-4" />
+                                        Documents
+                                    </Button>
+                                    <Button
+                                        variant={searchView === "snippets" ? "default" : "outline"}
+                                        size="sm"
+                                        className="gap-1"
+                                        onClick={() => handleSwitchView("snippets")}
+                                        aria-pressed={searchView === "snippets"}
+                                    >
+                                        <ListBullets className="h-4 w-4" />
+                                        Paragraphs
+                                    </Button>
+                                </div>
+                                {searchResults === null && documentResults === null && (
                                     <UploadFiles setUploadedFiles={setUploadedFiles} />
                                 )}
-                                {searchResultsLoading && (
+                                {searchView === "documents" && documentResultsLoading && (
+                                    <div className="mt-4 flex items-center justify-center">
+                                        <InlineLoading
+                                            className="mt-4"
+                                            message={"Searching documents"}
+                                            iconClassName="h-5 w-5"
+                                        />
+                                    </div>
+                                )}
+                                {searchView === "documents" &&
+                                    !documentResultsLoading &&
+                                    documentSearchError && (
+                                        <SearchErrorState
+                                            message={documentSearchError}
+                                            onRetry={() => searchDocuments()}
+                                        />
+                                    )}
+                                {searchView === "documents" &&
+                                    !documentResultsLoading &&
+                                    !documentSearchError &&
+                                    documentResults !== null &&
+                                    documentResults.length === 0 && (
+                                        <EmptySearchResults query={searchQuery} />
+                                    )}
+                                {searchView === "documents" &&
+                                    !documentResultsLoading &&
+                                    !documentSearchError &&
+                                    documentResults &&
+                                    documentResults.length > 0 && (
+                                        <div className="mt-4 max-w-[92vw]">
+                                            <Button
+                                                onClick={() => handleSearchInputChange("")}
+                                                className="mb-4"
+                                                variant={"outline"}
+                                            >
+                                                <ArrowLeft className="inline mr-2" />
+                                                See All
+                                            </Button>
+                                            <ScrollArea className="h-[80vh]">
+                                                {documentResults.map((documentResult) => {
+                                                    const documentKey = getDocumentKey(
+                                                        documentResult.best.additional,
+                                                    );
+                                                    return (
+                                                        <DocumentCard
+                                                            key={documentKey}
+                                                            document={documentResult}
+                                                            expandedState={
+                                                                expandedDocuments[documentKey]
+                                                            }
+                                                            onToggleExpand={() =>
+                                                                toggleDocument(
+                                                                    documentResult.best.additional,
+                                                                )
+                                                            }
+                                                            onRetry={() =>
+                                                                fetchDocumentParagraphs(
+                                                                    documentResult.best.additional,
+                                                                )
+                                                            }
+                                                        />
+                                                    );
+                                                })}
+                                            </ScrollArea>
+                                        </div>
+                                    )}
+                                {searchView === "snippets" && searchResultsLoading && (
                                     <div className="mt-4 flex items-center justify-center">
                                         <InlineLoading
                                             className="mt-4"
@@ -838,7 +1257,15 @@ export default function Search() {
                                         />
                                     </div>
                                 )}
-                                {focusSearchResult && (
+                                {searchView === "snippets" &&
+                                    !searchResultsLoading &&
+                                    searchError && (
+                                        <SearchErrorState
+                                            message={searchError}
+                                            onRetry={() => searchSnippets()}
+                                        />
+                                    )}
+                                {searchView === "snippets" && focusSearchResult && (
                                     <div className="mt-4">
                                         <Button
                                             onClick={() => setFocusSearchResult(null)}
@@ -851,8 +1278,18 @@ export default function Search() {
                                         {focusNote(focusSearchResult)}
                                     </div>
                                 )}
-                                {!focusSearchResult &&
+                                {searchView === "snippets" &&
+                                    !focusSearchResult &&
                                     !searchResultsLoading &&
+                                    !searchError &&
+                                    searchResults !== null &&
+                                    searchResults.length === 0 && (
+                                        <EmptySearchResults query={searchQuery} />
+                                    )}
+                                {searchView === "snippets" &&
+                                    !focusSearchResult &&
+                                    !searchResultsLoading &&
+                                    !searchError &&
                                     searchResults &&
                                     searchResults.length > 0 && (
                                         <div className="mt-4 max-w-[92vw] break-all">
@@ -880,7 +1317,9 @@ export default function Search() {
                                         </div>
                                     )}
                                 {!searchResultsLoading &&
+                                    !documentResultsLoading &&
                                     searchResults === null &&
+                                    documentResults === null &&
                                     !searchQuery.trim() && (
                                         <div className="w-full mt-4">
                                             {fileObjectsLoading && (

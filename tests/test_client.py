@@ -329,6 +329,95 @@ def test_notes_search_no_results(client, search_config, sample_org_data, default
 
 # ----------------------------------------------------------------------------------------------------
 @pytest.mark.django_db(transaction=True)
+def test_document_search_groups_results_by_document(
+    client, search_config, sample_org_data, default_user: KhojUser
+):
+    # Arrange
+    headers = {"Authorization": "Bearer kk-secret"}
+    text_search.setup(OrgToEntries, sample_org_data, regenerate=False, user=default_user)
+    user_query = quote("How to install Khoj?")
+
+    # Act
+    response = client.get(f"/api/search/documents?q={user_query}&n=5&t=org", headers=headers)
+
+    # Assert
+    assert response.status_code == 200
+    documents = response.json()
+    assert 1 <= len(documents) <= 5, "Expected at most 5 documents"
+
+    # Same-named documents from different files/sources remain distinct
+    document_keys = [
+        (document["best"]["additional"]["source"], document["best"]["additional"]["file"])
+        for document in documents
+    ]
+    assert len(document_keys) == len(set(document_keys)), "Documents must be unique by source and file"
+
+    # Documents ordered by the relevance of their best matching paragraph
+    scores = [document["best"]["score"] for document in documents]
+    assert scores == sorted(scores), "Documents should be ordered by best paragraph score"
+
+    for document in documents:
+        assert document["best"]["entry"], "Each document should preview its best paragraph"
+        assert document["best"]["corpus_id"]
+        assert document["best"]["additional"]["file"]
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.django_db(transaction=True)
+def test_document_search_no_results(client, search_config, sample_org_data, default_user: KhojUser):
+    # Arrange
+    headers = {"Authorization": "Bearer kk-secret"}
+    text_search.setup(OrgToEntries, sample_org_data, regenerate=False, user=default_user)
+    user_query = quote("How to find my goat?")
+
+    # Act
+    response = client.get(
+        f"/api/search/documents?q={user_query}&n=5&t=org&r=true&max_distance=0.22", headers=headers
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == [], "Expected no documents"
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.django_db(transaction=True)
+def test_document_paragraph_search_returns_sections_for_document(
+    client, search_config, sample_org_data, default_user: KhojUser
+):
+    # Arrange
+    headers = {"Authorization": "Bearer kk-secret"}
+    text_search.setup(OrgToEntries, sample_org_data, regenerate=False, user=default_user)
+    user_query = quote("How to install Khoj?")
+    document_response = client.get(
+        f"/api/search/documents?q={user_query}&n=5&t=org", headers=headers
+    )
+    assert document_response.status_code == 200
+    assert len(document_response.json()) >= 1
+    document = document_response.json()[0]
+    file = document["best"]["additional"]["file"]
+    source = document["best"]["additional"]["source"]
+
+    # Act
+    response = client.get(
+        f"/api/search/document?q={user_query}&file={quote(file)}&source={source}&n=5&t=org",
+        headers=headers,
+    )
+
+    # Assert
+    assert response.status_code == 200
+    paragraphs = response.json()
+    assert 1 <= len(paragraphs) <= 5, "Expected at most 5 paragraphs for the document"
+    assert all(
+        paragraph["additional"]["file"] == file and paragraph["additional"]["source"] == source
+        for paragraph in paragraphs
+    ), "All paragraphs must belong to the requested source and file"
+    scores = [paragraph["score"] for paragraph in paragraphs]
+    assert scores == sorted(scores), "Paragraphs should be ordered by relevance"
+
+
+# ----------------------------------------------------------------------------------------------------
+@pytest.mark.django_db(transaction=True)
 def test_notes_search_with_only_filters(client, sample_org_data, default_user: KhojUser):
     # Arrange
     headers = {"Authorization": "Bearer kk-secret"}

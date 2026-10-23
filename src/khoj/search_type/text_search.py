@@ -1,7 +1,7 @@
 import logging
 import math
 from pathlib import Path
-from typing import List, Optional, Tuple, Type, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import requests
 import torch
@@ -103,6 +103,8 @@ async def query(
     question_embedding: Union[torch.Tensor, None] = None,
     max_distance: float = None,
     agent: Optional[Agent] = None,
+    max_results: int = 10,
+    offset: int = 0,
 ) -> Tuple[List[dict], List[Entry]]:
     "Search for entries that answer the query"
 
@@ -122,12 +124,12 @@ async def query(
             question_embedding = state.embeddings_model[search_model.name].embed_query(query)
 
     # Find relevant entries for the query
-    top_k = 10
     with timer("Search Time", logger, state.device):
         hits = EntryAdapters.search_with_embeddings(
             raw_query=raw_query,
             embeddings=question_embedding,
-            max_results=top_k,
+            max_results=max_results,
+            offset=offset,
             file_type_filter=file_type,
             max_distance=max_distance,
             user=user,
@@ -187,6 +189,45 @@ def deduplicated_search_responses(hits: List[SearchResponse]):
                     },
                 }
             )
+
+
+def group_results_by_document(
+    hits: List[SearchResponse],
+    max_documents: int = 5,
+    max_paragraphs_per_document: int = 5,
+) -> List[List[SearchResponse]]:
+    """Group paragraph search hits by their source document.
+
+    A document is uniquely identified by its (source, file path) pair, so
+    same-named notes from different sources or paths stay in separate groups.
+    Hits are expected to be ordered best-first. Each group retains up to
+    max_paragraphs_per_document paragraphs in relevance order. Documents are
+    returned ordered by the relevance of their best matching paragraph.
+    """
+    groups: Dict[tuple, List[SearchResponse]] = {}
+    best_rank: Dict[tuple, int] = {}
+    seen_corpus_ids: Dict[tuple, set] = {}
+    seen_entries: Dict[tuple, set] = {}
+
+    for rank, hit in enumerate(hits):
+        additional = hit.additional or {}
+        document_key = (additional.get("source") or "", additional.get("file") or "")
+        if document_key not in groups:
+            groups[document_key] = []
+            best_rank[document_key] = rank
+            seen_corpus_ids[document_key] = set()
+            seen_entries[document_key] = set()
+        if len(groups[document_key]) >= max_paragraphs_per_document:
+            continue
+        # Skip duplicate rows / identical paragraphs indexed more than once
+        if hit.corpus_id in seen_corpus_ids[document_key] or hit.entry in seen_entries[document_key]:
+            continue
+        groups[document_key].append(hit)
+        seen_corpus_ids[document_key].add(hit.corpus_id)
+        seen_entries[document_key].add(hit.entry)
+
+    ordered_groups = sorted(groups.items(), key=lambda item: best_rank[item[0]])
+    return [paragraphs for _, paragraphs in ordered_groups][:max_documents]
 
 
 def rerank_and_sort_results(hits, query, rank_results, search_model_name):

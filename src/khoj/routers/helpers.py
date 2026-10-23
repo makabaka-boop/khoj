@@ -137,6 +137,7 @@ from khoj.utils.helpers import (
 )
 from khoj.utils.rawconfig import (
     ChatRequestBody,
+    DocumentSearchResponse,
     FileData,
     LocationData,
     SearchResponse,
@@ -1572,6 +1573,177 @@ async def execute_search(
     logger.debug(f"🔍 Search took: {end_time - start_time:.3f} seconds")
 
     return results
+
+
+# Content types indexed as paragraph text entries
+TEXT_SEARCH_TYPES = [
+    SearchType.All.value,
+    SearchType.Org.value,
+    SearchType.Markdown.value,
+    SearchType.Github.value,
+    SearchType.Notion.value,
+    SearchType.Plaintext.value,
+    SearchType.Pdf.value,
+]
+
+
+async def execute_document_search(
+    user: KhojUser,
+    q: str,
+    n: Optional[int] = 5,
+    t: Optional[SearchType] = None,
+    r: Optional[bool] = False,
+    max_distance: Optional[Union[float, None]] = None,
+    agent: Optional[Agent] = None,
+) -> List[DocumentSearchResponse]:
+    """Semantic search results grouped by their source document.
+
+    Up to n distinct documents are returned, ordered by the best matching
+    paragraph in each document. Candidates are scanned in batches until n
+    distinct documents are found, so a single long document contributing many
+    matching paragraphs cannot crowd out other matching documents. The
+    caller's permissions and query filters (file, word, date) are applied.
+    """
+    results: List[DocumentSearchResponse] = []
+    start_time = time.time()
+
+    # Ensure the agent, if present, is accessible by the user
+    if user and agent and not await AgentAdapters.ais_agent_accessible(agent, user):
+        logger.error(f"Agent {agent.slug} is not accessible by user {user}")
+        return results
+
+    if q is None or q == "":
+        logger.warning("No query param (q) passed in API call to initiate document search")
+        return results
+
+    # initialize variables
+    user_query = q.strip()
+    results_count = n or 5
+    t = t or state.SearchType.All
+
+    if t.value not in TEXT_SEARCH_TYPES:
+        return results
+
+    # return cached results, if available
+    if user:
+        query_cache_key = f"documents-{user_query}-{n}-{t}-{r}-{max_distance}"
+        if query_cache_key in state.query_cache[user.uuid]:
+            logger.debug("Return response from query cache")
+            return state.query_cache[user.uuid][query_cache_key]
+
+    # Encode query with filter terms removed
+    defiltered_query = user_query
+    for filter in [DateFilter(), WordFilter(), FileFilter()]:
+        defiltered_query = filter.defilter(defiltered_query)
+
+    with timer("Encoding query took", logger=logger):
+        search_model = await sync_to_async(get_default_search_model)()
+        encoded_asymmetric_query = state.embeddings_model[search_model.name].embed_query(defiltered_query)
+
+    # Scan candidate paragraphs in batches until enough distinct documents
+    # match the query or the scan limit is exhausted.
+    candidate_batch_size = max(results_count * 5, 25)
+    max_candidates = 100
+    hits = []
+    distinct_documents: Set[Tuple[Optional[str], Optional[str]]] = set()
+    offset = 0
+    with timer("Query took", logger):
+        while offset < max_candidates:
+            batch_hits = await text_search.query(
+                user_query,
+                user,
+                t,
+                question_embedding=encoded_asymmetric_query,
+                max_distance=max_distance,
+                agent=agent,
+                max_results=candidate_batch_size,
+                offset=offset,
+            )
+            if not batch_hits:
+                break
+            hits.extend(batch_hits)
+            for hit in batch_hits:
+                distinct_documents.add((hit.file_source, hit.file_path))
+            offset += len(batch_hits)
+            if len(batch_hits) < candidate_batch_size or len(distinct_documents) >= results_count:
+                break
+
+    # Group paragraphs into documents (dedupe=False to keep identical content
+    # from distinct documents; group_results_by_document dedupes within one).
+    collated_results = list(text_search.collate_results(hits, dedupe=False))
+    collated_results = text_search.rerank_and_sort_results(
+        collated_results, query=defiltered_query, rank_results=r, search_model_name=search_model.name
+    )
+    document_groups = text_search.group_results_by_document(
+        collated_results,
+        max_documents=results_count,
+        max_paragraphs_per_document=1,
+    )
+    results = [DocumentSearchResponse(best=paragraphs[0]) for paragraphs in document_groups]
+
+    # Cache results
+    if user:
+        state.query_cache[user.uuid][query_cache_key] = results
+
+    end_time = time.time()
+    logger.debug(f"🔍 Document search took: {end_time - start_time:.3f} seconds")
+
+    return results
+
+
+async def execute_document_paragraph_search(
+    user: KhojUser,
+    q: str,
+    file: str,
+    source: Optional[str] = None,
+    n: Optional[int] = 5,
+    t: Optional[SearchType] = None,
+    r: Optional[bool] = False,
+    max_distance: Optional[Union[float, None]] = None,
+    agent: Optional[Agent] = None,
+) -> List[SearchResponse]:
+    """Return up to n best matching paragraphs within a single document.
+
+    The search reuses the permission and filter aware execute_search flow,
+    restricted to the requested file via a file: query filter. Results are
+    then narrowed to exact (source, file path) matches so same-named files at
+    different paths or from different sources are not mixed together.
+    """
+    if q is None or q.strip() == "" or not file:
+        return []
+
+    results_count = n or 5
+    user_query = q.strip()
+    file_filtered_query = f'{user_query} file:"{file}"'
+
+    # Fetch a wider pool as the file: filter matches file paths as substrings
+    pool = await execute_search(
+        user=user,
+        q=file_filtered_query,
+        n=max(results_count * 5, 25),
+        t=t,
+        r=r,
+        max_distance=max_distance,
+        dedupe=False,
+        agent=agent,
+    )
+
+    paragraphs: List[SearchResponse] = []
+    seen_entries = set()
+    for result in pool:
+        additional = result.additional or {}
+        if additional.get("file") != file:
+            continue
+        if source is not None and additional.get("source") != source:
+            continue
+        if result.entry in seen_entries:
+            continue
+        paragraphs.append(result)
+        seen_entries.add(result.entry)
+        if len(paragraphs) >= results_count:
+            break
+
+    return paragraphs
 
 
 def send_message_to_model(

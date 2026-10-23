@@ -70,6 +70,12 @@ class SearchResponse(ConfigBase):
     corpus_id: str
 
 
+class DocumentSearchResponse(ConfigBase):
+    # The best matching paragraph in the document. Its additional metadata
+    # (source, file, uri, heading) identifies the document as a whole.
+    best: SearchResponse
+
+
 class FileData(BaseModel):
     name: str
     content: bytes

@@ -2155,6 +2155,7 @@ class EntryAdapters:
         file_type_filter: str = None,
         max_distance: float = math.inf,
         agent: Agent = None,
+        offset: int = 0,
     ):
         owner_filter = Q()
 
@@ -2175,7 +2176,7 @@ class EntryAdapters:
         if file_type_filter:
             relevant_entries = relevant_entries.filter(file_type=file_type_filter)
         relevant_entries = relevant_entries.order_by("distance")
-        return relevant_entries[:max_results]
+        return relevant_entries[offset : offset + max_results]
 
     @staticmethod
     @require_valid_user

@@ -11,6 +11,7 @@ from khoj.processor.content.github.github_to_entries import GithubToEntries
 from khoj.processor.content.org_mode.org_to_entries import OrgToEntries
 from khoj.processor.content.text_to_entries import TextToEntries
 from khoj.search_type import text_search
+from khoj.utils.rawconfig import SearchResponse
 from tests.helpers import get_index_files, get_sample_data
 
 logger = logging.getLogger(__name__)
@@ -406,3 +407,82 @@ def test_text_search_setup_github(search_config, default_user: KhojUser):
 def verify_embeddings(expected_count, user):
     embeddings = Entry.objects.filter(user=user, file_type="org").count()
     assert embeddings == expected_count
+
+
+# ----------------------------------------------------------------------------------------------------
+def _make_search_response(entry, score, source, file, corpus_id, heading=None, uri=None):
+    return SearchResponse.model_validate(
+        {
+            "entry": entry,
+            "score": score,
+            "corpus_id": corpus_id,
+            "additional": {
+                "source": source,
+                "file": file,
+                "uri": uri,
+                "compiled": f"compiled-{corpus_id}",
+                "heading": heading,
+            },
+        }
+    )
+
+
+def test_group_results_by_document_limits_documents_and_paragraphs():
+    # Arrange: ten hits from a single document, nine from another
+    hits = [
+        _make_search_response(f"alpha-{i}", 0.01 + i * 0.01, "computer", "/alpha.org", f"a{i}")
+        for i in range(10)
+    ]
+    hits += [
+        _make_search_response(f"beta-{i}", 0.2 + i * 0.01, "computer", "/beta.org", f"b{i}")
+        for i in range(9)
+    ]
+
+    # Act
+    groups = text_search.group_results_by_document(
+        hits, max_documents=5, max_paragraphs_per_document=5
+    )
+
+    # Assert
+    assert len(groups) == 2
+    # documents ordered by their best matching paragraph
+    assert [g[0].additional["file"] for g in groups] == ["/alpha.org", "/beta.org"]
+    # only up to five paragraphs retained per document, in relevance order
+    assert [p.entry for p in groups[0]] == [f"alpha-{i}" for i in range(5)]
+    assert [p.entry for p in groups[1]] == [f"beta-{i}" for i in range(5)]
+
+
+def test_group_results_by_document_separates_same_named_files():
+    # Arrange: files with identical names from different paths and sources
+    hits = [
+        _make_search_response("first", 0.1, "computer", "/path-a/notes.org", "c1"),
+        _make_search_response("second", 0.2, "computer", "/path-b/notes.org", "c2"),
+        _make_search_response("third", 0.3, "notion", "/path-c/notes.org", "c3"),
+    ]
+
+    # Act
+    groups = text_search.group_results_by_document(hits, max_documents=5)
+
+    # Assert
+    assert len(groups) == 3
+    assert {g[0].additional["file"] + g[0].additional["source"] for g in groups} == {
+        "/path-a/notes.orgcomputer",
+        "/path-b/notes.orgcomputer",
+        "/path-c/notes.orgnotion",
+    }
+
+
+def test_group_results_by_document_dedupes_repeated_paragraphs():
+    # Arrange: same paragraph text indexed twice within one document
+    hits = [
+        _make_search_response("duplicate paragraph", 0.1, "computer", "/dup.org", "c1"),
+        _make_search_response("duplicate paragraph", 0.2, "computer", "/dup.org", "c2"),
+        _make_search_response("unique paragraph", 0.3, "computer", "/dup.org", "c3"),
+    ]
+
+    # Act
+    groups = text_search.group_results_by_document(hits, max_documents=5)
+
+    # Assert
+    assert [p.entry for p in groups[0]] == ["duplicate paragraph", "unique paragraph"]
+

@@ -19,12 +19,14 @@ from khoj.routers.helpers import (
     ApiUserRateLimiter,
     CommonQueryParams,
     ConversationCommandRateLimiter,
+    execute_document_paragraph_search,
+    execute_document_search,
     execute_search,
     get_user_config,
     update_telemetry_state,
 )
 from khoj.utils import state
-from khoj.utils.rawconfig import SearchResponse
+from khoj.utils.rawconfig import DocumentSearchResponse, SearchResponse
 from khoj.utils.state import SearchType
 
 # Initialize Router
@@ -65,6 +67,86 @@ async def search(
         r=r,
         max_distance=max_distance or math.inf,
         dedupe=dedupe,
+    )
+
+    update_telemetry_state(
+        request=request,
+        telemetry_type="api",
+        api="search",
+        **common.__dict__,
+    )
+
+    return results
+
+
+@api.get("/search/documents", response_model=List[DocumentSearchResponse])
+@requires(["authenticated"])
+async def search_documents(
+    q: str,
+    request: Request,
+    common: CommonQueryParams,
+    n: Optional[int] = 5,
+    t: Optional[SearchType] = SearchType.All,
+    r: Optional[bool] = False,
+    max_distance: Optional[Union[float, None]] = None,
+):
+    """Search the knowledge base grouped by document.
+
+    Returns up to n documents, ordered by the relevance of each document's
+    best matching paragraph. Same-named documents from different sources or
+    paths are returned separately. Uses the caller's content permissions and
+    query filters.
+    """
+    user = request.user.object
+
+    results = await execute_document_search(
+        user=user,
+        q=q,
+        n=n,
+        t=t,
+        r=r,
+        max_distance=max_distance or math.inf,
+    )
+
+    update_telemetry_state(
+        request=request,
+        telemetry_type="api",
+        api="search",
+        **common.__dict__,
+    )
+
+    return results
+
+
+@api.get("/search/document", response_model=List[SearchResponse])
+@requires(["authenticated"])
+async def search_document(
+    q: str,
+    request: Request,
+    common: CommonQueryParams,
+    file: str,
+    source: Optional[str] = None,
+    n: Optional[int] = 5,
+    t: Optional[SearchType] = SearchType.All,
+    r: Optional[bool] = False,
+    max_distance: Optional[Union[float, None]] = None,
+):
+    """Return up to n best matching paragraphs within a single document.
+
+    The document is identified by its exact file path (and, optionally,
+    source). Uses the caller's content permissions and query filters.
+    """
+    user = request.user.object
+
+    results = await execute_document_paragraph_search(
+        user=user,
+        q=q,
+        file=file,
+        source=source,
+        n=n,
+        t=t,
+        r=r,
+        max_distance=max_distance or math.inf,
     )
 
     update_telemetry_state(
