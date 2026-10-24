@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     HTTPException,
     Query,
@@ -62,6 +63,7 @@ from khoj.routers.helpers import (
     ConversationCommandRateLimiter,
     DeleteMessageRequestBody,
     FeedbackData,
+    ShareConversationRequestBody,
     WebSocketConnectionManager,
     acreate_title_from_history,
     agenerate_chat_response,
@@ -271,23 +273,38 @@ def chat_history(
                 "is_hidden": conversation.agent.is_hidden,
             }
 
-    meta_log = conversation.conversation_log
-    meta_log.update(
-        {
-            "conversation_id": conversation.id,
-            "slug": conversation.title if conversation.title else conversation.slug,
-            "agent": agent_metadata,
-            "is_owner": conversation.user == user,
-        }
-    )
+    all_messages = conversation.conversation_log.get("chat") or []
+    # Annotate response-only copies with share selection tokens. The stored conversation_log is
+    # never mutated; grouping happens before n-based pagination so tokens stay consistent.
+    share_meta_by_message_id = {}
+    for turn in ConversationAdapters.group_chat_messages_into_turns(all_messages):
+        for turn_message in turn.messages:
+            share_meta_by_message_id[id(turn_message)] = (turn.token, turn.is_selectable)
+
+    annotated_messages = []
+    for message in all_messages:
+        annotated_message = dict(message)
+        share_token, turn_selectable = share_meta_by_message_id.get(id(message), ("", False))
+        annotated_message["shareToken"] = share_token
+        annotated_message["turnSelectable"] = turn_selectable
+        annotated_messages.append(annotated_message)
 
     if n:
         # Get latest N messages if N > 0
-        if n > 0 and meta_log.get("chat"):
-            meta_log["chat"] = meta_log["chat"][-n:]
+        if n > 0:
+            annotated_messages = annotated_messages[-n:]
         # Else return all messages except latest N
-        elif n < 0 and meta_log.get("chat"):
-            meta_log["chat"] = meta_log["chat"][:n]
+        elif n < 0:
+            annotated_messages = annotated_messages[:n]
+
+    meta_log = {
+        **conversation.conversation_log,
+        "chat": annotated_messages,
+        "conversation_id": conversation.id,
+        "slug": conversation.title if conversation.title else conversation.slug,
+        "agent": agent_metadata,
+        "is_owner": conversation.user == user,
+    }
 
     update_telemetry_state(
         request=request,
@@ -446,6 +463,7 @@ def duplicate_chat_history_public_conversation(
     request: Request,
     common: CommonQueryParams,
     conversation_id: str,
+    share_request: Optional[ShareConversationRequestBody] = Body(None),
 ):
     user = request.user.object
     domain = request.headers.get("host")
@@ -459,9 +477,28 @@ def duplicate_chat_history_public_conversation(
     if host_domain not in ALLOWED_HOSTS:
         raise HTTPException(status_code=401, detail="Unauthorized domain")
 
-    # Duplicate Conversation History to Public Conversation
+    # Only the conversation owner can share it; get_conversation_by_user filters by user + client.
     conversation = ConversationAdapters.get_conversation_by_user(user, request.user.client_app, conversation_id)
-    public_conversation = ConversationAdapters.make_public_conversation_copy(conversation)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # When turn tokens are provided, snapshot only the selected complete Q&A turns.
+    selected_messages = None
+    if share_request is not None and share_request.turns is not None:
+        selected_messages, selection_error = ConversationAdapters.resolve_share_tokens(
+            conversation.conversation_log.get("chat") or [], share_request.turns
+        )
+        if selection_error:
+            return Response(
+                content=json.dumps({"status": "error", "message": selection_error}),
+                media_type="application/json",
+                status_code=400,
+            )
+
+    # Duplicate (the selected messages of) the Conversation History to a Public Conversation
+    public_conversation = ConversationAdapters.make_public_conversation_copy(
+        conversation, messages=selected_messages
+    )
     public_conversation_url = PublicConversationAdapters.get_public_conversation_url(public_conversation)
 
     update_telemetry_state(

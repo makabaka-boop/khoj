@@ -146,7 +146,7 @@ function extractTrainOfThoughtGroups(
     return groups;
 }
 
-function TrainOfThoughtComponent(props: TrainOfThoughtComponentProps) {
+export function TrainOfThoughtComponent(props: TrainOfThoughtComponentProps) {
     const [collapsed, setCollapsed] = useState(props.completed);
     const [trainOfThoughtGroups, setTrainOfThoughtGroups] = useState<TrainOfThoughtGroup[]>([]);
 

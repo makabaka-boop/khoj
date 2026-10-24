@@ -2027,6 +2027,11 @@ class DeleteMessageRequestBody(BaseModel):
     turn_id: str
 
 
+class ShareConversationRequestBody(BaseModel):
+    # Opaque turn tokens from GET /api/chat/history. Omitted/None = share the whole conversation.
+    turns: Optional[List[str]] = None
+
+
 class FeedbackData(BaseModel):
     uquery: str
     kquery: str

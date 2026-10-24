@@ -1,3 +1,5 @@
+import copy
+import hashlib
 import json
 import logging
 import math
@@ -6,6 +8,7 @@ import random
 import re
 import secrets
 import sys
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from functools import wraps
@@ -13,10 +16,12 @@ from typing import (
     Any,
     Callable,
     Coroutine,
+    Dict,
     Iterable,
     List,
     Optional,
     ParamSpec,
+    Tuple,
     TypeVar,
 )
 
@@ -994,16 +999,142 @@ class PublicConversationAdapters:
         return PublicConversation.objects.filter(source_owner=user, slug=slug).first().delete()
 
 
+@dataclass
+class TurnGroup:
+    """A complete question/answer turn (or an incomplete/orphan group) in a chat log."""
+
+    token: str
+    turn_id: Optional[str]
+    anchor_index: int
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    is_selectable: bool = False
+
+
+def _is_nonempty_khoj_answer(message: Dict[str, Any]) -> bool:
+    """A khoj message counts as an answer only when it has non-empty content."""
+    if message.get("by") != "khoj":
+        return False
+    content = message.get("message", "")
+    if isinstance(content, list):
+        return len(content) > 0
+    return bool(str(content or "").strip())
+
+
+def _legacy_turn_token(anchor_index: int, anchor_message: Dict[str, Any]) -> str:
+    # Bind the token to the anchor message position, timestamp and content so that deleting or
+    # inserting earlier messages (index shift) or editing/deleting the turn invalidates it.
+    payload = json.dumps(anchor_message, sort_keys=True, ensure_ascii=False, default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    created = anchor_message.get("created") or ""
+    return f"legacy:{anchor_index}:{created}:{digest}"
+
+
 class ConversationAdapters:
     @staticmethod
-    def make_public_conversation_copy(conversation: Conversation):
+    def make_public_conversation_copy(conversation: Conversation, messages: Optional[List[Dict]] = None):
+        # Snapshot only the selected messages when provided, otherwise the whole conversation log.
+        # Deep copy so later in-request or source-conversation mutations never leak into the snapshot.
+        conversation_log = (
+            {"chat": copy.deepcopy(messages)}
+            if messages is not None
+            else copy.deepcopy(conversation.conversation_log)
+        )
         return PublicConversation.objects.create(
             source_owner=conversation.user,
             agent=conversation.agent,
-            conversation_log=conversation.conversation_log,
+            conversation_log=conversation_log,
             slug=conversation.slug,
             title=conversation.title if conversation.title else conversation.slug,
         )
+
+    @staticmethod
+    def group_chat_messages_into_turns(messages: List[Dict[str, Any]]) -> List[TurnGroup]:
+        """Group a flat chat log into question/answer turns.
+
+        Messages carrying a turnId are grouped by that id (matching delete-by-turn semantics).
+        Legacy messages without a turnId start a new group at every ``by == "you"`` message; the
+        following turnId-less messages belong to it until the next user message or turnId-bearing
+        message. Leading orphan khoj messages form their own, non-selectable group.
+        """
+        groups: List[TurnGroup] = []
+        groups_by_turn_id: Dict[str, TurnGroup] = {}
+        legacy_group: Optional[TurnGroup] = None
+
+        for index, message in enumerate(messages):
+            turn_id = message.get("turnId")
+            if turn_id:
+                # A modern turn breaks any open legacy run.
+                legacy_group = None
+                group = groups_by_turn_id.get(turn_id)
+                if group is None:
+                    group = TurnGroup(
+                        token=f"turn:{turn_id}",
+                        turn_id=turn_id,
+                        anchor_index=index,
+                        messages=[message],
+                    )
+                    groups_by_turn_id[turn_id] = group
+                    groups.append(group)
+                else:
+                    group.messages.append(message)
+            else:
+                if message.get("by") == "you" or legacy_group is None:
+                    legacy_group = TurnGroup(
+                        token="",
+                        turn_id=None,
+                        anchor_index=index,
+                        messages=[message],
+                    )
+                    groups.append(legacy_group)
+                else:
+                    legacy_group.messages.append(message)
+
+        for group in groups:
+            if group.turn_id is None:
+                group.token = _legacy_turn_token(group.anchor_index, group.messages[0])
+            has_question = any(message.get("by") == "you" for message in group.messages)
+            has_answer = any(_is_nonempty_khoj_answer(message) for message in group.messages)
+            group.is_selectable = has_question and has_answer
+
+        return groups
+
+    @staticmethod
+    def resolve_share_tokens(
+        messages: List[Dict[str, Any]], tokens: List[str]
+    ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+        """Resolve opaque share tokens (from GET /api/chat/history) to messages.
+
+        Returns ``(selected_messages, None)`` on success, in original log order, or
+        ``(None, user_facing_reason)`` on any mismatch. Never mutates the input.
+        """
+        if not tokens:
+            return None, "Select at least one Q&A to share."
+
+        groups = ConversationAdapters.group_chat_messages_into_turns(messages)
+        groups_by_token = {group.token: group for group in groups}
+
+        selected_groups: List[TurnGroup] = []
+        seen_tokens = set()
+        for raw_token in tokens:
+            token = (raw_token or "").strip()
+            if not token:
+                return None, "This share request contains an invalid selection. Please try again."
+            if token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+
+            group = groups_by_token.get(token)
+            if group is None:
+                if token.startswith(("turn:", "legacy:")):
+                    return None, "A selected Q&A has been deleted or changed. Please reselect and try again."
+                return None, "This share request contains an invalid selection. Please try again."
+            if not group.is_selectable:
+                return None, "A selected Q&A is incomplete (missing the question or answer) and cannot be shared."
+            selected_groups.append(group)
+
+        selected_message_ids = {id(message) for group in selected_groups for message in group.messages}
+        selected_messages = [message for message in messages if id(message) in selected_message_ids]
+        return selected_messages, None
 
     @staticmethod
     @require_valid_user

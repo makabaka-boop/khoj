@@ -178,6 +178,9 @@ export interface SingleChatMessage {
     queryFiles?: AttachedFileText[];
     excalidrawDiagram?: string;
     mermaidjsDiagram?: string;
+    // Response-only annotations from GET /api/chat/history, used by selective share. Never persisted.
+    shareToken?: string;
+    turnSelectable?: boolean;
 }
 
 export interface StreamMessage {
@@ -291,6 +294,8 @@ interface ChatMessageProps {
     excalidrawDiagram?: string;
     mermaidjsDiagram?: string;
     generatedFiles?: AttachedFileText[];
+    // When true, hide in-conversation controls (speak/delete/retry/feedback). Used in share previews.
+    readOnly?: boolean;
 }
 
 interface TrainOfThoughtProps {
@@ -1130,7 +1135,8 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>((props, ref) =>
                             {renderTimeStamp(props.chatMessage.created)}
                         </div>
                         <div className={`${styles.chatButtons} shadow-sm`}>
-                            {props.chatMessage.by === "khoj" &&
+                            {!props.readOnly &&
+                                props.chatMessage.by === "khoj" &&
                                 (isPlaying ? (
                                     interrupted ? (
                                         <InlineLoading iconClassName="p-0" className="m-0" />
@@ -1153,7 +1159,7 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>((props, ref) =>
                                         />
                                     </button>
                                 ))}
-                            {props.chatMessage.turnId && (
+                            {!props.readOnly && props.chatMessage.turnId && (
                                 <button
                                     title="Delete"
                                     className={`${styles.deleteButton}`}
@@ -1165,7 +1171,8 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>((props, ref) =>
                                     />
                                 </button>
                             )}
-                            {props.chatMessage.by === "khoj" &&
+                            {!props.readOnly &&
+                                props.chatMessage.by === "khoj" &&
                                 props.onRetryMessage &&
                                 props.isLastMessage && (
                                     <button
@@ -1224,7 +1231,8 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>((props, ref) =>
                                     />
                                 )}
                             </button>
-                            {props.chatMessage.by === "khoj" &&
+                            {!props.readOnly &&
+                                props.chatMessage.by === "khoj" &&
                                 (props.chatMessage.intent ? (
                                     <FeedbackButtons
                                         uquery={props.chatMessage.intent.query}
