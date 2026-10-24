@@ -218,6 +218,7 @@ class ResearchIteration:
         summarizedResult: str = None,
         warning: str = None,
         raw_response: list = None,
+        step: int = None,
     ):
         self.query = ToolCall(**query) if isinstance(query, dict) else query
         self.context = context
@@ -227,6 +228,9 @@ class ResearchIteration:
         self.summarizedResult = summarizedResult
         self.warning = warning
         self.raw_response = raw_response
+        # 1-based position of this iteration in its research request.
+        # Used to identify the source step when reusing generated files.
+        self.step = step
 
     def to_dict(self) -> dict:
         data = vars(self).copy()

@@ -681,6 +681,7 @@ Assuming you can search the user's files and the internet.
 - User Location: {location}
 - User Name: {username}
 
+{generated_files}
 # Available Tool AIs
 You decide which of the tool AIs listed below would you use to accomplish the user assigned task. You **only** have access to the following tool AIs:
 
@@ -985,6 +986,8 @@ plt.savefig('population_by_year_plot.png')
 
 Now it's your turn to construct a secure Python program to answer the user's query using the provided context and coversation provided below.
 Ensure you include the Python code to execute and wrap it in a markdown code block.
+
+{generated_files_context}
 
 Context:
 ---
